@@ -37,16 +37,20 @@ readonly MIN_KERNEL_VERSION=20627
 readonly MIN_BASH_VERSION=4
 readonly REQUIRED_COMMANDS="awk grep hdparm lsblk udevadm uname pv"
 
+# Global variables, with defaults
+ENHANCED=""
+
 show_usage() {
     cat <<- _EOF_ >&2
 
-Usage:  ${SCRIPT_NAME} [-f] device | ${SCRIPT_NAME} -l
+Usage:  ${SCRIPT_NAME} [-f] [-e] [-p] device | -l
 Erase a disk with the ATA SECURITY ERASE UNIT command
 
 OPTIONS
+    -l    List available disks to erase
+    -e    Perform "ENHANCED" security erase
+    -p    Show estimated progress during erase
     -f    Don't prompt before erasing (USE WITH CAUTION)
-    -l    List disks
-    -p    Show progress
 
 EXAMPLES
     Erase the device /dev/sda:
@@ -143,8 +147,9 @@ show_disk_partitions () {
 # return estimated erase time, in minutes.
 estimated_erase_time () {
     local ata_disk="$1"
-    hdparm -I "${ata_disk}" \
-        | awk '/for SECURITY ERASE UNIT/ { print $1 }' \
+    local enhanced_str="${ENHANCED:+ENHANCED }"  ## note space at end
+    show_estimated_erase_time "${ata_disk}" \
+        | awk "/for ${enhanced_str}SECURITY ERASE UNIT/"' { print $1 }' \
         | sed 's/min$//'
 }
 
@@ -158,8 +163,8 @@ show_estimated_erase_time () {
 
 erase_disk() {
     local ata_disk="$1"
-    hdparm --user-master u --security-erase "${DISK_PASSWORD}" "$ata_disk" >/dev/null
-    # hdparm --user-master u --enhanced-security-erase "${DISK_PASSWORD}" "$ata_disk" >/dev/null
+    local enhanced_opt="${ENHANCED:+-enhanced}"
+    hdparm --user-master u --security-erase${enhanced_opt} "${DISK_PASSWORD}" "$ata_disk" >/dev/null
 }
 
 # show an estimated progress meter and timer, which requires `pv`.
@@ -227,7 +232,7 @@ main() {
         fi
     done
 
-    while getopts ":pfhl" option
+    while getopts ":efhlp" option
     do
         case "${option}" in
         l)
@@ -237,6 +242,9 @@ main() {
         h)
             show_usage
             exit 0
+            ;;
+        e)
+            ENHANCED="ENHANCED"
             ;;
         f)
             force=true
@@ -299,7 +307,7 @@ main() {
         exit 1
     fi
 
-    echo "Initiating secure erase for ${ata_disk}..."
+    echo "Initiating ${ENHANCED:+ENHANCED }secure erase for ${ata_disk}..."
     # if requested, add (background) progress-ish meter/timer
     ${progress} && (show_progress "${ata_disk}" &) && sleep 0.5
     # local progress_pid=$!
