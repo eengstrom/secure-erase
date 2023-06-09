@@ -35,7 +35,7 @@ readonly DISK_PASSWORD="123456"
 readonly REQUIRED_OS="Linux"
 readonly MIN_KERNEL_VERSION=20627
 readonly MIN_BASH_VERSION=4
-readonly REQUIRED_COMMANDS="awk grep hdparm lsblk udevadm uname"
+readonly REQUIRED_COMMANDS="awk grep hdparm lsblk udevadm uname pv"
 
 show_usage() {
     cat <<- _EOF_ >&2
@@ -46,6 +46,7 @@ Erase a disk with the ATA SECURITY ERASE UNIT command
 OPTIONS
     -f    Don't prompt before erasing (USE WITH CAUTION)
     -l    List disks
+    -p    Show progress
 
 EXAMPLES
     Erase the device /dev/sda:
@@ -139,7 +140,15 @@ show_disk_partitions () {
         | sed 's/^[\t ]*/  /'
 }
 
-estimate_erase_time () {
+# return estimated erase time, in minutes.
+estimated_erase_time () {
+    local ata_disk="$1"
+    hdparm -I "${ata_disk}" \
+        | awk '/for SECURITY ERASE UNIT/ { print $1 }' \
+        | sed 's/min$//'
+}
+
+show_estimated_erase_time () {
     local ata_disk="$1"
     echo "ESTIMATED time to erase:"
     hdparm -I "${ata_disk}" \
@@ -150,6 +159,19 @@ estimate_erase_time () {
 erase_disk() {
     local ata_disk="$1"
     hdparm --user-master u --security-erase "${DISK_PASSWORD}" "$ata_disk" >/dev/null
+    # hdparm --user-master u --enhanced-security-erase "${DISK_PASSWORD}" "$ata_disk" >/dev/null
+}
+
+# show an estimated progress meter and timer, which requires `pv`.
+# idea from https://stackoverflow.com/questions/23630501/how-to-progress-bar-in-bash
+show_progress() {
+    local ata_disk="$1"
+    local est_time="$(estimated_erase_time "${ata_disk}")"
+    local est_sec=$(("${est_time}" * 60))
+    echo "NOTE: drive reported **estimated** time to completion; may take *much* more or less than predicted..."
+    for x in $(seq "${est_sec}") ; do
+      printf .; sleep 1;
+    done | pv -ptec -i0.5 -s"${est_sec}" > /dev/null
 }
 
 main() {
@@ -159,8 +181,14 @@ main() {
     local kernel_version
     local kernel_version_numeric
     local force=false
+    local progress=false
     local -l user_choice # Force lower case
 
+    # setup signal handlers to kill entire process tree on exit
+    # https://unix.stackexchange.com/questions/67532/what-does-kill-0-do-actually
+    # https://stackoverflow.com/questions/360201/how-do-i-kill-background-processes-jobs-when-my-shell-script-exits
+    trap "exit" INT TERM
+    trap "kill 0" EXIT
 
     if [[ "${BASH_VERSINFO[0]}" -lt "${MIN_BASH_VERSION}" ]]; then
         echo >&2 "Error: This script requires bash-4.0 or higher"
@@ -199,7 +227,7 @@ main() {
         fi
     done
 
-    while getopts ":f:hl" option
+    while getopts ":pfhl" option
     do
         case "${option}" in
         l)
@@ -213,12 +241,16 @@ main() {
         f)
             force=true
             ;;
+        p)
+            progress=true
+            ;;
         *)
             show_usage
             exit 1
             ;;
         esac
     done
+    shift $((OPTIND-1))
 
     # remaining args should start with disk to erase
     local ata_disk="$1"
@@ -244,10 +276,11 @@ main() {
         exit 1
     fi
 
+
     if ! ${force}; then
         echo "[5m[1;31mWARNING: about to erase all data on ${ata_disk} beyond recovery:[0m"
         show_disk_partitions "${ata_disk}"
-        estimate_erase_time "${ata_disk}"
+        show_estimated_erase_time "${ata_disk}"
         read -p "Continue [y/N]? " -r user_choice
     fi
 
@@ -259,15 +292,20 @@ main() {
     echo -n "Attempting to set user password and enable secure erase..."
     set_password "${ata_disk}"
     if ! is_password_set "${ata_disk}"; then
-        echo " password set."
+        echo " done."
     else
         echo
         echo >&2 "Error setting user password on ${ata_disk}"
         exit 1
     fi
 
-    echo "Initiating secure erase for ${ata_disk}"
+    echo "Initiating secure erase for ${ata_disk}..."
+    # if requested, add (background) progress-ish meter/timer
+    ${progress} && (show_progress "${ata_disk}" &) && sleep 0.5
+    # local progress_pid=$!
+    # sleep 0.5
     erase_disk "${ata_disk}"
+    # kill $progress_pid
     # re-read partition table
     partprobe  "${ata_disk}"
     # Sucessful erase should reset "enabled" value to "not"
