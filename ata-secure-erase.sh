@@ -4,8 +4,10 @@
 # Use hdparm (8) to erase an ATA disk with the SECURITY ERASE UNIT (F4h)
 # command under Linux
 
-# (C) 2015 TigerOnVaseline
-# https://github.com/TigerOnVaseline/ata-secure-erase
+# Copyright (c) 2023 Eric Engstrom
+# Copyright (c) 2015 TigerOnVaseline
+#
+# https://github.com/eengstrom/secure-erase
 
 # This code is licensed under MIT license:
 # http://opensource.org/licenses/MIT
@@ -18,6 +20,10 @@
 # References:
 # T13/1699-D, AT Attachment 8 - ATA/ATAPI Command Set (ATA8-ACS)
 # http://www.t13.org/documents/UploadedDocuments/docs2007/D1699r4a-ATA8-ACS.pdf
+
+# Related Tutorials:
+# - https://www.thomas-krenn.com/en/wiki/Perform_a_SSD_Secure_Erase
+# - https://www.stevenmaude.co.uk/posts/securely-erasing-frozen-hard-disks-with-hdparm
 
 # DISCLAIMER
 # Whilst care has been taken to thoroughly test this script using a variety of
@@ -53,7 +59,7 @@ OPTIONS
     -f    Don't prompt before erasing (USE WITH CAUTION)
 
 EXAMPLES
-    Erase the device /dev/sda:
+  - Erase the device /dev/sda:
     ${SCRIPT_NAME} /dev/sda
 
 _EOF_
