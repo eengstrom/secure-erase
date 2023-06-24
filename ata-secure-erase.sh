@@ -179,10 +179,13 @@ show_progress() {
     local ata_disk="$1"
     local est_time="$(estimated_erase_time "${ata_disk}")"
     local est_sec=$(("${est_time}" * 60))
-    echo "NOTE: drive reported **estimated** time to completion; may take *much* more or less than predicted..."
-    for x in $(seq "${est_sec}") ; do
+    local est_max=$(("${est_sec}" * 4))
+    echo "NOTE: drive reported **estimated** time to completion;"
+    echo "      may take *much* more or less than predicted..."
+    for x in $(seq "${est_max}") ; do
       printf .; sleep 1;
-    done | pv -ptec -i0.5 -s"${est_sec}" > /dev/null
+    done | pv -ptec -s"${est_sec}" > /dev/null
+    # done | pv -ptec -i0.5 -s"${est_sec}" > /dev/null
 }
 
 main() {
@@ -290,17 +293,16 @@ main() {
         exit 1
     fi
 
+    echo "[5m[1;31mWARNING: about to erase all data on ${ata_disk} beyond recovery:[0m"
+    show_disk_partitions "${ata_disk}"
+    show_estimated_erase_time "${ata_disk}"
 
     if ! ${force}; then
-        echo "[5m[1;31mWARNING: about to erase all data on ${ata_disk} beyond recovery:[0m"
-        show_disk_partitions "${ata_disk}"
-        show_estimated_erase_time "${ata_disk}"
         read -p "Continue [y/N]? " -r user_choice
-    fi
-
-    if ! ${force} && [[ "${user_choice}" != [yY] ]]; then
-        echo "Secure erase operation cancelled"
-        exit 0
+        if [[ "${user_choice}" != [yY] ]]; then
+            echo "Secure erase operation cancelled"
+            exit 0
+        fi
     fi
 
     echo -n "Attempting to set user password and enable secure erase..."
