@@ -44,7 +44,7 @@ readonly MIN_BASH_VERSION=4
 readonly REQUIRED_COMMANDS="awk grep hdparm lsblk udevadm uname pv"
 
 # Global variables, with defaults
-ENHANCED=""
+ENHANCED=""   # NOTE: this is a string global, for simplicity of coding, but not readability.
 
 show_usage() {
     cat <<- _EOF_ >&2
@@ -76,9 +76,9 @@ list_available_disks() {
         fi
     done
     if [[ ${#eligible_disks[@]} -gt 0 ]]; then
-        echo "Available disks for secure erase are:"
+        echo "Available disks for ${ENHANCED@L}secure erase are:"
         for eligible_disk in "${eligible_disks[@]}"; do
-            echo "${eligible_disk}"
+            echo "${eligible_disk} - $(estimated_erase_time_info "${eligible_disk}")"
         done
     else
         echo >&2 "No supported disks found for secure erase"
@@ -96,28 +96,34 @@ is_block_device() {
 
 ata_erase_support() {
     local disk="$1"
-    local -a hdparm_identify_result
-    local identify_index
-    # If SECURITY ERASE UNIT is supported, hdparm -I (identify) output should
-    # match "Security:" with "supported" on either the first or second
-    # subsequent line:
-    # https://salsa.debian.org/debian/hdparm/blob/master/identify.c
-    readarray -t hdparm_identify_result < <( hdparm -I "${disk}" 2>/dev/null )
-    # Could probably have done this with grep -c instead. Oh, well.
-    for identify_index in "${!hdparm_identify_result[@]}"; do
-        if [[ "${hdparm_identify_result[$identify_index]}" =~ ^Security: ]]; then
-            if [[ "${hdparm_identify_result[$identify_index+1]//$'\t'/}" =~ ^supported \
-                || "${hdparm_identify_result[$identify_index+2]//$'\t'/}" =~ ^supported ]]; then
-                true
-            else
-                false
-            fi
-        break
-        else
-            false
-        fi
-    done
+    # if the search for time to erase is empty, this will return non-zero.
+    estimated_erase_time_info "${disk}" >/dev/null
 }
+
+# old_ata_erase_support() {
+#     local disk="$1"
+#     local -a hdparm_identify_result
+#     local identify_index
+#     # If SECURITY ERASE UNIT is supported, hdparm -I (identify) output should
+#     # match "Security:" with "supported" on either the first or second
+#     # subsequent line:
+#     # https://salsa.debian.org/debian/hdparm/blob/master/identify.c
+#     readarray -t hdparm_identify_result < <( hdparm -I "${disk}" 2>/dev/null )
+#     # Could probably have done this with grep -c instead. Oh, well.
+#     for identify_index in "${!hdparm_identify_result[@]}"; do
+#         if [[ "${hdparm_identify_result[$identify_index]}" =~ ^Security: ]]; then
+#             if [[ "${hdparm_identify_result[$identify_index+1]//$'\t'/}" =~ ^supported \
+#                 || "${hdparm_identify_result[$identify_index+2]//$'\t'/}" =~ ^supported ]]; then
+#                 true
+#             else
+#                 false
+#             fi
+#         break
+#         else
+#             false
+#         fi
+#     done
+# }
 
 is_unfrozen() {
     local frozen_state
@@ -150,26 +156,22 @@ show_disk_partitions () {
         | sed 's/^[\t ]*/  /'
 }
 
-# return estimated erase time, in minutes.
-estimated_erase_time () {
+estimated_erase_time_info () {
     local ata_disk="$1"
-    local enhanced_str="${ENHANCED:+ENHANCED }"  ## note space at end
-    show_estimated_erase_time "${ata_disk}" \
-        | awk "/for ${enhanced_str}SECURITY ERASE UNIT/"' { print $1 }' \
-        | sed 's/min$//'
+    hdparm -I "${ata_disk}" 2>/dev/null \
+      | grep -oE "[0-9]+min for ${ENHANCED}SECURITY ERASE UNIT."
 }
 
-show_estimated_erase_time () {
+# return estimated erase time, in minutes.
+estimated_erase_time_min () {
     local ata_disk="$1"
-    echo "ESTIMATED time to erase:"
-    hdparm -I "${ata_disk}" \
-        | awk -F. '/for SECURITY ERASE UNIT/ {print $1 "\n" $2}' \
-        | sed 's/^[\t ]*/  /'
+    estimated_erase_time_info "${ata_disk}" \
+        | grep -oE '^[0-9]+'
 }
 
 erase_disk() {
     local ata_disk="$1"
-    local enhanced_opt="${ENHANCED:+-enhanced}"
+    local enhanced_opt="${ENHANCED:+-${ENHANCED@L}}"
     hdparm --user-master u --security-erase${enhanced_opt} "${DISK_PASSWORD}" "$ata_disk" >/dev/null
 }
 
@@ -177,7 +179,7 @@ erase_disk() {
 # idea from https://stackoverflow.com/questions/23630501/how-to-progress-bar-in-bash
 show_progress() {
     local ata_disk="$1"
-    local est_time="$(estimated_erase_time "${ata_disk}")"
+    local est_time="$(estimated_erase_time_min "${ata_disk}")"
     local est_sec=$(("${est_time}" * 60))
     local est_max=$(("${est_sec}" * 4))
     echo "NOTE: drive reported **estimated** time to completion;"
@@ -194,6 +196,7 @@ main() {
     local kernel_release
     local kernel_version
     local kernel_version_numeric
+    local list_only=false
     local force=false
     local progress=false
     local -l user_choice # Force lower case
@@ -245,15 +248,14 @@ main() {
     do
         case "${option}" in
         l)
-            list_available_disks
-            exit 0
+            list_only=true
             ;;
         h)
             show_usage
             exit 0
             ;;
         e)
-            ENHANCED="ENHANCED"
+            ENHANCED="ENHANCED " # NOTE: intentional space at end of string!
             ;;
         f)
             force=true
@@ -269,6 +271,11 @@ main() {
     done
     shift $((OPTIND-1))
 
+    if ${list_only}; then
+        list_available_disks
+        exit 0
+    fi
+
     # remaining args should start with disk to erase
     local ata_disk="$1"
     if [[ -z "${ata_disk}" ]]; then
@@ -283,7 +290,7 @@ main() {
     fi
 
     if ! ata_erase_support "${ata_disk}"; then
-        echo >&2 "Error: ATA SECURITY ERASE UNIT unsupported on ${ata_disk}, use ${SCRIPT_NAME} -l to list available disks"
+        echo >&2 "Error: ATA ${ENHANCED}SECURITY ERASE UNIT unsupported on ${ata_disk}, use ${SCRIPT_NAME} -l to list available disks"
         exit 1
     fi
 
@@ -293,11 +300,12 @@ main() {
         exit 1
     fi
 
-    echo "[5m[1;31mWARNING: about to erase all data on ${ata_disk} beyond recovery:[0m"
+    echo "Disk erase on ${ata_disk}:"
     show_disk_partitions "${ata_disk}"
-    show_estimated_erase_time "${ata_disk}"
+    echo "ESTIMATED $(estimated_erase_time_info "${ata_disk}")"
 
     if ! ${force}; then
+        echo "[5m[1;31mWARNING: about to erase all data on ${ata_disk} beyond recovery.[0m"
         read -p "Continue [y/N]? " -r user_choice
         if [[ "${user_choice}" != [yY] ]]; then
             echo "Secure erase operation cancelled"
@@ -315,7 +323,7 @@ main() {
         exit 1
     fi
 
-    echo "Initiating ${ENHANCED:+ENHANCED }secure erase for ${ata_disk}..."
+    echo "Initiating ${ENHANCED}secure erase for ${ata_disk}..."
     # if requested, add (background) progress-ish meter/timer
     ${progress} && (show_progress "${ata_disk}" &) && sleep 0.5
     # local progress_pid=$!
@@ -326,10 +334,10 @@ main() {
     partprobe  "${ata_disk}"
     # Sucessful erase should reset "enabled" value to "not"
     if ! is_password_set "${ata_disk}"; then
-        echo "Secure erase was successful for ${ata_disk}";
+        echo "${ENHANCED}Secure erase was successful for ${ata_disk}";
         exit 0
     else
-        echo >&2 "Error performing secure erase on ${ata_disk}"
+        echo >&2 "Error performing ${ENHANCED}secure erase on ${ata_disk}"
         exit 1
     fi;
 }
